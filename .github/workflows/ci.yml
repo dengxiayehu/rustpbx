@@ -27,6 +27,11 @@ jobs:
   lib-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      # lib tests spawn deep session-test stacks; 2 MiB default overflows
+      # (see AGENTS.md §二.1 / session hold tests). 32 MiB matches the
+      # documented local requirement.
+      RUST_MIN_STACK: 33554432
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

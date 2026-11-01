@@ -26,6 +26,8 @@ TEST_SLEEP_BASELINE=(
   "src/addons/cc/tests/helpers/cdr_capture.rs"
   "src/addons/cc/tests/helpers/e2e_test_server.rs"
   "src/addons/cc/tests/helpers/test_ua.rs"
+  "tests/ivr_e2e/test_inband_dtmf_e2e.rs"
+  "tests/proxy_flow/test_amd_e2e.rs"
   "src/call/app/ivr_test.rs"
   "src/call/app/queue_test.rs"
   "src/call/runtime/session_registry.rs"
