@@ -1227,26 +1227,7 @@ action = { type = "transfer", target = "100" }
     /// Spawn a one-shot axum HTTP server that always returns `body`.
     /// Returns the base URL (e.g. `"http://127.0.0.1:PORT"`).
     async fn spawn_webhook_server(body: serde_json::Value) -> String {
-        use axum::{Json, Router, routing::any};
-
-        let port = portpicker::pick_unused_port().expect("no free port");
-        let router = Router::new().route(
-            "/hook",
-            any(move || {
-                let body = body.clone();
-                async move { Json(body) }
-            }),
-        );
-
-        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port))
-            .await
-            .expect("bind");
-
-        crate::utils::spawn(async move {
-            axum::serve(listener, router).await.ok();
-        });
-
-        format!("http://127.0.0.1:{}/hook", port)
+        super::super::testing::spawn_static_json_server("/hook", body).await
     }
 
     /// Build an IVR definition whose root menu contains a single webhook entry

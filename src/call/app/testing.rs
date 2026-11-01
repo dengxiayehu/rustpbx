@@ -28,17 +28,120 @@ use crate::config::Config;
 use crate::proxy::proxy_call::sip_session::SipSessionHandle;
 use chrono::Utc;
 use sea_orm::DatabaseConnection;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument::WithSubscriber;
 
-/// Type alias for mock call stack command sender.
-pub type MockCmdTx = tokio::sync::mpsc::UnboundedSender<CallCommand>;
 /// Type alias for mock call stack command receiver.
 pub type MockCmdRx = tokio::sync::mpsc::Receiver<CallCommand>;
+
+/// Minimal [`ApplicationContext`] for tests: session `"test-session"`, inbound
+/// call from `caller` to `callee`, no DB, default config.
+pub fn test_context_for(caller: &str, callee: &str) -> ApplicationContext {
+    test_context_with_config(caller, callee, Arc::new(Config::default()))
+}
+
+/// [`test_context_for`] with the conventional fixture identity
+/// (caller `"1001"`, callee `"2000"`).
+pub fn test_context() -> ApplicationContext {
+    test_context_for("1001", "2000")
+}
+
+/// [`test_context_for`] with a specific [`Config`] (e.g. proxy settings
+/// parsed from TOML in queue tests).
+pub fn test_context_with_config(
+    caller: &str,
+    callee: &str,
+    config: Arc<Config>,
+) -> ApplicationContext {
+    ApplicationContext::new(
+        DatabaseConnection::default(),
+        CallInfo {
+            session_id: "test-session".into(),
+            caller: caller.into(),
+            callee: callee.into(),
+            direction: "inbound".into(),
+            started_at: Utc::now(),
+            sip_headers: HashMap::new(),
+            route_name: None,
+        },
+        config,
+        reqwest::Client::new(),
+    )
+}
+
+/// In-memory [`std::io::Write`] sink that captures tracing output for log
+/// assertions. Clone it freely — all clones share the same buffer.
+#[derive(Clone)]
+pub struct MemoryLogWriter(pub Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl MemoryLogWriter {
+    pub fn new() -> Self {
+        Self(Arc::new(std::sync::Mutex::new(Vec::new())))
+    }
+
+    /// Full captured log text.
+    pub fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+}
+
+impl Default for MemoryLogWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::io::Write for MemoryLogWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Build a `tracing` fmt subscriber writing into `writer` (no timestamps,
+/// no ANSI). Wrap the returned subscriber in `set_default` / `with_default`
+/// as the caller requires.
+pub fn log_capture_subscriber(
+    writer: MemoryLogWriter,
+) -> impl tracing::Subscriber + Send + Sync + 'static {
+    let w = writer.clone();
+    tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || w.clone())
+        .finish()
+}
+
+/// Spawn a one-shot axum HTTP server that answers every method on `path`
+/// with the static JSON `body`. Returns the full URL. Test scaffolding
+/// shared by the IVR webhook/provider suites.
+pub async fn spawn_static_json_server(path: &str, body: serde_json::Value) -> String {
+    use axum::{Json, Router, routing::any};
+
+    let router = Router::new().route(
+        path,
+        any(move || {
+            let body = body.clone();
+            async move { Json(body) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock server");
+    let addr = listener.local_addr().unwrap();
+    crate::utils::spawn(async move {
+        axum::serve(listener, router).await.ok();
+    });
+    format!("http://{}:{}{}", addr.ip(), addr.port(), path)
+}
 
 /// Fully assembled, in-memory [`CallApp`] harness — no SIP stack required.
 ///
@@ -58,9 +161,6 @@ pub struct MockCallStack {
     pub queue_meta_updates: std::sync::Mutex<Vec<(Option<String>, Option<String>, Option<String>)>>,
     /// Recorded [`CallCommand::PinAgentMeta`] payloads (see [`Self::next_cmd`]).
     pub pinned_agent_meta: std::sync::Mutex<Vec<(Option<String>, Option<String>)>>,
-    /// Dial targets the mock session reports as unregistered local users
-    /// (answers to `CallCommand::ProbeOfflineTarget`).
-    offline_targets: Arc<std::sync::Mutex<HashSet<String>>>,
     /// Cancel token wired to the AppEventLoop's child token.
     cancel: CancellationToken,
     /// Background task running the AppEventLoop.
@@ -75,23 +175,7 @@ impl MockCallStack {
     /// * `caller` – Simulated caller-ID (e.g. `"1001"` or `"sip:alice@test"`).
     /// * `callee` – Simulated callee-ID (e.g. `"1002"`).
     pub fn run(app: Box<dyn CallApp>, caller: &str, callee: &str) -> Self {
-        // Minimal ApplicationContext (no DB, no storage).
-        let ctx = ApplicationContext::new(
-            DatabaseConnection::default(),
-            CallInfo {
-                session_id: "test-session".into(),
-                caller: caller.into(),
-                callee: callee.into(),
-                direction: "inbound".into(),
-                started_at: Utc::now(),
-                sip_headers: HashMap::new(),
-                route_name: None,
-            },
-            Arc::new(Config::default()),
-            reqwest::Client::new(),
-        );
-
-        Self::run_with_context(app, ctx)
+        Self::run_with_context(app, test_context_for(caller, callee))
     }
 
     pub fn run_with_context(app: Box<dyn CallApp>, ctx: ApplicationContext) -> Self {
@@ -101,13 +185,13 @@ impl MockCallStack {
         // Request/reply probes are answered here so the app never waits on
         // the test reading its commands; everything else is forwarded.
         let (cmd_tx, cmd_rx) = mpsc::channel(256);
-        let offline_targets = Arc::new(std::sync::Mutex::new(HashSet::new()));
-        let offline = offline_targets.clone();
         crate::utils::spawn(async move {
             while let Some(cmd) = session_rx.recv().await {
                 match cmd {
-                    CallCommand::ProbeOfflineTarget { target, reply } => {
-                        let _ = reply.send(offline.lock().unwrap().contains(&target));
+                    // No offline targets in the mock stack: every probe
+                    // reports the target as reachable.
+                    CallCommand::ProbeOfflineTarget { target: _, reply } => {
+                        let _ = reply.send(false);
                     }
                     other => {
                         if cmd_tx.send(other).await.is_err() {
@@ -134,16 +218,9 @@ impl MockCallStack {
             cmd_rx,
             queue_meta_updates: std::sync::Mutex::new(Vec::new()),
             pinned_agent_meta: std::sync::Mutex::new(Vec::new()),
-            offline_targets,
             cancel,
             join_handle,
         }
-    }
-
-    /// Report `target` as an unregistered local user to offline probes.
-    pub fn set_offline(&self, target: impl Into<String>) -> &Self {
-        self.offline_targets.lock().unwrap().insert(target.into());
-        self
     }
 
     // ── Event injection ───────────────────────────────────────────────────────

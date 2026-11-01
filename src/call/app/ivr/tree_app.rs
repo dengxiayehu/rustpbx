@@ -1770,11 +1770,9 @@ mod tests {
     use super::*;
     use crate::call::app::ivr::config::{MenuEntry, MenuNode};
     use crate::call::app::testing::MockCallStack;
-    use crate::call::app::{CallInfo, ControllerEvent, ExitReason};
+    use crate::call::app::{ControllerEvent, ExitReason};
     use crate::call::domain::CallCommand;
-    use crate::config::Config;
     use crate::proxy::proxy_call::sip_session::SipSessionHandle;
-    use sea_orm::DatabaseConnection;
     use std::collections::HashMap;
 
     fn test_definition() -> IvrDefinition {
@@ -1797,20 +1795,7 @@ mod tests {
     }
 
     fn test_context() -> ApplicationContext {
-        ApplicationContext::new(
-            DatabaseConnection::default(),
-            CallInfo {
-                session_id: "test-session".into(),
-                caller: "1001".into(),
-                callee: "2000".into(),
-                direction: "inbound".into(),
-                started_at: chrono::Utc::now(),
-                sip_headers: HashMap::new(),
-                route_name: None,
-            },
-            Arc::new(Config::default()),
-            reqwest::Client::new(),
-        )
+        crate::call::app::testing::test_context()
     }
 
     #[tokio::test]

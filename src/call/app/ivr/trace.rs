@@ -152,13 +152,6 @@ impl IvrTraceCollector {
         self.sessions.read().await.iter().rev().cloned().collect()
     }
 
-    pub async fn clear_session(&self, session_id: &str) {
-        let mut entries = self.entries.write().await;
-        entries.retain(|e| e.session_id != session_id);
-        let mut sessions = self.sessions.write().await;
-        sessions.retain(|s| s.session_id != session_id);
-    }
-
     pub async fn increment_steps(&self, session_id: &str) {
         if let Some(s) = self
             .sessions
@@ -291,25 +284,6 @@ mod tests {
             .unwrap();
         assert!(s.ended_at.is_some());
         assert_eq!(s.status, "completed");
-    }
-
-    #[tokio::test]
-    async fn test_clear_session() {
-        let collector = IvrTraceCollector::new();
-        collector.record_entry(mk_entry("call_001", 0)).await;
-        collector.record_entry(mk_entry("call_001", 1)).await;
-        collector.record_session(mk_session("call_001")).await;
-
-        collector.clear_session("call_001").await;
-        assert!(collector.query_by_session("call_001").await.is_empty());
-        assert!(
-            collector
-                .sessions()
-                .await
-                .iter()
-                .find(|s| s.session_id == "call_001")
-                .is_none()
-        );
     }
 
     #[tokio::test]

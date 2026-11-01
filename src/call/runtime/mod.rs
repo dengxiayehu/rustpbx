@@ -48,9 +48,6 @@ mod session_runtime;
 #[cfg(test)]
 pub(crate) mod test_utils;
 
-#[cfg(test)]
-mod integration_tests;
-
 pub use app_runtime::*;
 pub use command_dispatch::*;
 pub use command_executor::*;

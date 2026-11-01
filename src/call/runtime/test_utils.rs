@@ -28,12 +28,6 @@ impl MockAudioSender {
     }
 }
 
-impl Default for MockAudioSender {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl AudioSender for MockAudioSender {
     async fn send(&self, sample: MediaSample) -> Result<(), mpsc::error::SendError<MediaSample>> {
         self.samples.lock().await.push(sample);

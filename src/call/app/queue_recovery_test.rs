@@ -81,13 +81,8 @@ async fn queue_recovery_missing_initial_kick_dials_once_and_preserves_entry() {
             .with_call_id("test-session".into())
             .with_agent_registry(registry.clone()),
     );
-    let logs = Arc::new(parking_lot::Mutex::new(Vec::new()));
-    let writer = logs.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .without_time()
-        .with_ansi(false)
-        .with_writer(move || RecoveryLogWriter(writer.clone()))
-        .finish();
+    let logs = crate::call::app::testing::MemoryLogWriter::new();
+    let subscriber = crate::call::app::testing::log_capture_subscriber(logs.clone());
     let mut stack = tracing::subscriber::with_default(subscriber, || {
         MockCallStack::run(app, "caller", "queue")
     });
@@ -161,7 +156,7 @@ async fn queue_recovery_missing_initial_kick_dials_once_and_preserves_entry() {
         stack.next_cmd(20).await.is_none(),
         "late kick must not dial after agent connection"
     );
-    let log = String::from_utf8(logs.lock().clone()).unwrap();
+    let log = logs.text();
     assert!(log.contains("session_id=test-session"), "{log}");
     assert!(
         log.contains("targeted recovery requested agent dial"),
@@ -252,20 +247,6 @@ async fn queue_recovery_healthy_wait_is_read_only_and_keeps_retry() {
     assert!(!result.recoverable);
     assert!(result.retry_armed);
     assert!(stack.next_cmd(20).await.is_none());
-}
-
-#[derive(Clone)]
-struct RecoveryLogWriter(Arc<parking_lot::Mutex<Vec<u8>>>);
-
-impl std::io::Write for RecoveryLogWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 #[tokio::test]

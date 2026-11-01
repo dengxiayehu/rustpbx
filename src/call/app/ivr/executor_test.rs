@@ -19,12 +19,9 @@ use super::executor::{
 use super::executor::*;
 use crate::call::app::ivr::{ResumeEventMode, RetryConfig, StepProvider};
 use crate::call::app::testing::MockCallStack;
-use crate::call::app::{ApplicationContext, CallInfo};
+use crate::call::app::ApplicationContext;
 use crate::call::domain::CallCommand;
-use crate::config::Config;
 use async_trait::async_trait;
-use chrono::Utc;
-use sea_orm::DatabaseConnection;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -112,20 +109,7 @@ fn mock_app(nodes: Vec<ActionNode>) -> StepIvrApp {
 }
 
 fn make_test_context() -> ApplicationContext {
-    ApplicationContext::new(
-        DatabaseConnection::default(),
-        CallInfo {
-            session_id: "test-session".into(),
-            caller: "1001".into(),
-            callee: "2000".into(),
-            direction: "inbound".into(),
-            started_at: Utc::now(),
-            sip_headers: HashMap::new(),
-            route_name: None,
-        },
-        Arc::new(Config::default()),
-        reqwest::Client::new(),
-    )
+    crate::call::app::testing::test_context()
 }
 
 /// Consumer contract for `ivr_step_trace`: `duration_ms` must equal
@@ -3044,26 +3028,7 @@ async fn test_error_action_returns_error() {
 
 /// Start a lightweight HTTP server that returns pre-programmed responses.
 async fn spawn_mock_provider(responses: Vec<serde_json::Value>) -> String {
-    use axum::{Json, Router, routing::post};
-    use std::sync::Mutex;
-
-    let responses = Arc::new(Mutex::new(responses.into_iter()));
-    let app = Router::new().route(
-        "/ivr/step",
-        post(move |Json(_body): Json<serde_json::Value>| {
-            let resp = {
-                let mut it = responses.lock().unwrap();
-                it.next().unwrap_or(serde_json::json!({"type": "hangup"}))
-            };
-            async move { Json(resp) }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    crate::utils::spawn(async move {
-        axum::serve(listener, app).await.ok();
-    });
-    format!("http://{}:{}/ivr/step", addr.ip(), addr.port())
+    spawn_mock_provider_with_fail(responses, Vec::new()).await.0
 }
 
 /// Mock provider with separate `/step` and `/fail` scripted responses.
